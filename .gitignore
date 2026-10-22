@@ -1,0 +1,16 @@
+# Secrets
+.env
+inventory_agent/.env
+
+# Generated database
+data/*.db
+data/*.db-journal
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+Icon?
