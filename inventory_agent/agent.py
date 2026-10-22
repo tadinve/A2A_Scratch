@@ -23,6 +23,7 @@ If the user does not provide a SKU, ask for it.
 Answer briefly using the tool result.
 Distinguish an item with zero stock from an item that was not found.
 If the tool reports an error, explain that inventory is temporarily unavailable.
+If the tool returns unauthenticated, report that inventory access could not be authenticated. Do not ask the user for a credential.
 Do not invent quantities.
 You can check stock but cannot update inventory or create purchases.
 """

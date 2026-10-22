@@ -61,3 +61,31 @@ Restore the database afterwards (`mv data/inventory.db.bak data/inventory.db`).
 ## Example trace
 
 See [docs/day01-example.md](docs/day01-example.md) for a captured tool call, result, and final answer, plus the other four checks.
+
+## Day 02: credential check
+
+`get_stock(sku)` is still the only tool the model sees, and its schema still has only `sku`.
+Inside, it reads `INVENTORY_SHARED_SECRET` from the environment and calls
+`protected_get_stock(sku, credential)`, which verifies it with `secrets.compare_digest`
+before running the SQLite query. A missing expected secret, a missing credential, or a
+wrong credential all return:
+
+```json
+{ "status": "unauthenticated", "message": "Inventory access could not be authenticated." }
+```
+
+Add to `inventory_agent/.env` (generate the secret locally, never commit it):
+
+```dotenv
+INVENTORY_PRINCIPAL=inventory_agent
+INVENTORY_SHARED_SECRET=<python3 -c "import secrets; print(secrets.token_urlsafe(32))">
+```
+
+Check the three cases directly:
+
+```bash
+uv run python scripts/check_auth.py
+```
+
+This is a teaching check inside one process. Any code in the process can read the secret
+or call the lookup directly, so it is not an enforcement boundary yet.
