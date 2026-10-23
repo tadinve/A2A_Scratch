@@ -75,7 +75,20 @@ The **credential** (the `X-API-Key` value) is compared in constant time against 
 | restricted-agent (`restricted`) | **403** | 200 | 200 |
 | Invalid key | 401 | 401 | 401 |
 
-**Evidence:** with the same restricted key, WIDGET-A returned 403 `forbidden` and WIDGET-C returned 200 with the record. The agent check still printed ALL PASS. *The pytest run (39 tests expected) was not confirmed in this session.*
+**Evidence:** reproducible with two commands.
+
+- `uv run pytest -v` gives **43 passed**. That covers the full 12-cell grid with detail-lookup counts, the original seven scenarios, deny by default, header and query spoofing, and migration tests on a throwaway database.
+- `uv run python scripts/check_remote_auth.py` against the live service gives **28/28 checks passed**:
+
+```
+              class A  class B  class C
+privileged        200      200      200
+restricted        403      200      200
+invalid           401      401      401
+missing           401      401      401
+```
+
+The live run also showed that every denied body was exactly `{status, message}`, with no name, quantity, or key. Spoofed `X-Inventory-Class`, `X-Role`, and `X-Permissions` headers and an `?inventory_class=C` query parameter all still got 403.
 
 ### The new flow
 

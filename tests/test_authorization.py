@@ -92,6 +92,9 @@ def get(client, sku="WIDGET-A", key=None, **extra_headers):
         ("invalid",    "not-a-key",    "WIDGET-A", 401, "unauthenticated", False, False),
         ("invalid",    "not-a-key",    "WIDGET-B", 401, "unauthenticated", False, False),
         ("invalid",    "not-a-key",    "WIDGET-C", 401, "unauthenticated", False, False),
+        ("missing",    None,           "WIDGET-A", 401, "unauthenticated", False, False),
+        ("missing",    None,           "WIDGET-B", 401, "unauthenticated", False, False),
+        ("missing",    None,           "WIDGET-C", 401, "unauthenticated", False, False),
     ],
 )
 def test_policy_grid(client, spy, who, key, sku, want_status, want_body, want_class, want_detail):
@@ -228,6 +231,12 @@ def test_class_comes_from_data_not_sku_name(client, spy):
 )
 def test_caller_headers_cannot_change_identity_role_or_class(client, spy, spoof):
     r = get(client, "WIDGET-A", RESTRICTED_KEY, **spoof)
+    assert r.status_code == 403
+    assert spy.detail_lookup is False
+
+
+def test_query_param_cannot_change_class(client, spy):
+    r = client.get("/stock/WIDGET-A?inventory_class=C", headers={"X-API-Key": RESTRICTED_KEY})
     assert r.status_code == 403
     assert spy.detail_lookup is False
 
