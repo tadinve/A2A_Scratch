@@ -6,33 +6,28 @@ Two layers:
   configured credential from the environment, and delegates.
 - ``protected_get_stock`` verifies that credential before touching SQLite.
 
-The model supplies the SKU. This module owns the SQL and the credential.
+The model supplies the SKU. This module owns the credential; the SQL lives in
+inventory_service/repository.py.
 """
 
 import logging
 import os
 import secrets
-import sqlite3
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Day 03A: the SQLite query now lives in the service package. Stage 03D replaces
+# this direct import with an HTTP call.
+from inventory_service.repository import lookup_sku as _lookup_sku
+
 _PACKAGE_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = _PACKAGE_DIR.parent
-DB_PATH = PROJECT_ROOT / "data" / "inventory.db"
 
 # Make the credential available even when this module is used outside `adk web`.
 load_dotenv(_PACKAGE_DIR / ".env")
 
 logger = logging.getLogger(__name__)
 
-_LOOKUP_SQL = """
-SELECT sku, name, quantity
-FROM inventory
-WHERE sku = ?;
-"""
-
-_UNAVAILABLE = {"status": "error", "message": "Inventory is temporarily unavailable."}
 _UNAUTHENTICATED = {
     "status": "unauthenticated",
     "message": "Inventory access could not be authenticated.",
@@ -90,32 +85,3 @@ def _authenticate(credential: str | None) -> str | None:
     if not secrets.compare_digest(credential.encode(), expected.encode()):
         return None
     return principal
-
-
-def _lookup_sku(sku: str) -> dict:
-    """Run the fixed, parameterized SQLite query. No auth logic here."""
-    normalized_sku = sku.strip().upper()
-
-    try:
-        # Read-only URI: a missing database is reported, not silently recreated.
-        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-    except sqlite3.Error:
-        return dict(_UNAVAILABLE)
-
-    try:
-        row = conn.execute(_LOOKUP_SQL, (normalized_sku,)).fetchone()
-    except sqlite3.Error:
-        return dict(_UNAVAILABLE)
-    finally:
-        conn.close()
-
-    if row is None:
-        return {"status": "not_found", "sku": normalized_sku}
-
-    found_sku, name, quantity = row
-    return {
-        "status": "found",
-        "sku": found_sku,
-        "name": name,
-        "quantity": quantity,
-    }

@@ -89,3 +89,9 @@ uv run python scripts/check_auth.py
 
 This is a teaching check inside one process. Any code in the process can read the secret
 or call the lookup directly, so it is not an enforcement boundary yet.
+
+## Learnings
+
+- [Day 01: ADK inventory agent](docs/day01-learnings.md)
+- [Day 02: credential check inside the tool](docs/day02-learnings.md)
+- [Day 03: HTTP, headers, Postman, API-key auth](docs/day03-learnings.md)

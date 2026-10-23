@@ -23,12 +23,12 @@ def _counting_lookup(sku: str) -> dict:
 
 tools._lookup_sku = _counting_lookup
 
-correct = os.environ.get("INVENTORY_SHARED_SECRET")
-if not correct:
+INVENTORY_SHARED_SECRET = os.environ.get("INVENTORY_SHARED_SECRET")
+if not INVENTORY_SHARED_SECRET:
     sys.exit("INVENTORY_SHARED_SECRET is not set; add it to inventory_agent/.env")
 
 cases = [
-    ("correct secret", correct, "found", True),
+    ("correct secret", INVENTORY_SHARED_SECRET, "found", True),
     ("None", None, "unauthenticated", False),
     ("incorrect secret", "not-the-secret", "unauthenticated", False),
 ]
