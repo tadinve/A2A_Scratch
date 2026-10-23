@@ -11,6 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from inventory_agent import tools  # noqa: E402  (loads inventory_agent/.env)
 
+if not hasattr(tools, "protected_get_stock"):
+    sys.exit(
+        "Day 02 reference script: the in-process protected_get_stock was replaced by\n"
+        "an HTTP client in Day 03D. To rerun it, check out commit c4b9047. For the\n"
+        "current checks, use scripts/check_remote_auth.py."
+    )
+
 # Count SQLite lookups so we can prove the failing cases never reach the DB.
 lookups = {"count": 0}
 _real_lookup = tools._lookup_sku

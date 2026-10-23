@@ -27,7 +27,7 @@ uv run python scripts/init_db.py
 ## Run
 
 ```bash
-uv run adk web
+uv run adk web --port 8080   # the inventory service uses 8000
 ```
 
 Open the URL it prints and pick `inventory_agent`. The Events panel shows each
@@ -95,3 +95,4 @@ or call the lookup directly, so it is not an enforcement boundary yet.
 - [Day 01: ADK inventory agent](docs/day01-learnings.md)
 - [Day 02: credential check inside the tool](docs/day02-learnings.md)
 - [Day 03: HTTP, headers, Postman, API-key auth](docs/day03-learnings.md)
+- [Day 04: authorization with roles and permissions](docs/day04-learnings.md)

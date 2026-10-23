@@ -1,6 +1,7 @@
 """SQLite access for the inventory service.
 
-Moved unchanged from the Day 02 agent tool. Only this module imports sqlite3.
+Only this module imports sqlite3. Two fixed queries: the classification (metadata
+for authorization) and the stock details (the protected data).
 It loads no configuration and contains no authentication logic.
 """
 
@@ -17,7 +18,38 @@ FROM inventory
 WHERE sku = ?;
 """
 
+_CLASS_SQL = """
+SELECT inventory_class
+FROM inventory
+WHERE sku = ?;
+"""
+
 _UNAVAILABLE = {"status": "error", "message": "Inventory is temporarily unavailable."}
+
+
+def get_classification(sku: str) -> dict:
+    """Return only a record's classification: metadata needed for authorization.
+
+    Returns {"status": "found", "sku", "inventory_class"}, {"status": "not_found", "sku"},
+    or the "error" dict. Never returns name or quantity.
+    """
+    normalized_sku = sku.strip().upper()
+
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return dict(_UNAVAILABLE)
+
+    try:
+        row = conn.execute(_CLASS_SQL, (normalized_sku,)).fetchone()
+    except sqlite3.Error:
+        return dict(_UNAVAILABLE)
+    finally:
+        conn.close()
+
+    if row is None:
+        return {"status": "not_found", "sku": normalized_sku}
+    return {"status": "found", "sku": normalized_sku, "inventory_class": row[0]}
 
 
 def lookup_sku(sku: str) -> dict:

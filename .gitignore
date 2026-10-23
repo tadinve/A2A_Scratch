@@ -9,9 +9,13 @@ data/*.db-journal
 # Python / uv
 .venv/
 __pycache__/
+.pytest_cache/
 *.pyc
 
 # macOS
 .DS_Store
 Icon?
 A2A Governance — Complete Learning Project.gdoc
+
+# ADK local session storage (chat history)
+.adk/

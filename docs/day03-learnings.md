@@ -2,7 +2,7 @@
 
 **Built:** `inventory_service`, a FastAPI process that owns SQLite (`repository.py`) and checks an `X-API-Key` header before any lookup (`app.py`).
 **Approach:** built it open first (03A), explored it with curl and Postman (03B), then added authentication (03C).
-**Not yet done:** 03D, making the agent an HTTP client of the service.
+**03D:** the agent's `get_stock` became an HTTP client of the service. See the 03D section below.
 
 ## Anatomy of a request and response
 
@@ -82,3 +82,26 @@ A 401 proves the server rejected the request, not that the database was skipped.
 | Wrong-key test from the client side | Impossible | `curl -H 'X-API-Key: wrong'` |
 | Who owns SQLite | The agent's tool module | Only `inventory_service/repository.py` |
 | Still not protected | Everything in-process | Direct file access by the same OS user |
+
+## Stage 03D — The agent becomes an HTTP client
+
+`get_stock(sku)` kept its exact model-facing signature. Inside, it now sends `GET /stock/{sku}` with `X-API-Key: <INVENTORY_CLIENT_SECRET>` using httpx. The agent package no longer imports sqlite3 or `inventory_service`.
+
+| Service reply | Tool returns to the model |
+|---|---|
+| 200 | The service's JSON, unchanged |
+| 404 | `not_found` |
+| 401 | `unauthenticated` |
+| Connection refused or timeout | `error` (temporarily unavailable). **No SQLite fallback.** |
+| Anything else | `error` |
+
+- **Two processes, two copies of the credential.** The agent reads `INVENTORY_CLIENT_SECRET` and the service reads its own secret. Changing only the client value now produces a real 401, which Day 02 could never show.
+- **Fail closed on both sides.** If the client has no key configured, it returns `unauthenticated` without sending a request. If the service is down, it returns `error` instead of reading the database itself.
+- **URL-encode path values.** `quote(sku, safe="")` stops a SKU containing `/` from changing the path.
+- **Normalize before sending.** `" widget-c "` arrived at the service as `WIDGET-C`.
+
+**Evidence:** `scripts/check_remote_auth.py` passed all eight checks. Those covered three import checks, found, zero stock, not found, a wrong client key, and a missing client key. The service log showed `AUTH OK` for exactly the three correct-key lookups, one 401 for the wrong key, and no line at all for the missing key, because nothing was sent.
+
+**Not confirmed in this session:** the `--stopped` run and the `adk web` conversation with the service up and down.
+
+**Gotcha:** `adk web` and uvicorn both default to port 8000. The second process fails with "address already in use". Run ADK on another port with `adk web --port 8080`.
