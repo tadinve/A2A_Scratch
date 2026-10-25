@@ -96,3 +96,4 @@ or call the lookup directly, so it is not an enforcement boundary yet.
 - [Day 02: credential check inside the tool](docs/day02-learnings.md)
 - [Day 03: HTTP, headers, Postman, API-key auth](docs/day03-learnings.md)
 - [Day 04: authorization with roles and permissions](docs/day04-learnings.md)
+- [Day 05: JWTs, token issuer, scopes, token lifecycle, key rotation](docs/day05-learnings.md) · [rotation runbook](docs/day05-key-rotation-runbook.txt)

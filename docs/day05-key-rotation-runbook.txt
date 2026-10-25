@@ -1,0 +1,161 @@
+DAY 05.8 - SIGNING-KEY ROTATION: STEP BY STEP
+=============================================
+
+Three terminals:
+  Terminal 1 = Inventory Service  (port 8000)
+  Terminal 2 = Token Issuer       (port 8001)
+  Terminal 3 = Commands and checks
+
+Rules:
+  - Each service reads its config ONLY at startup. After editing a config,
+    restart that service (Ctrl+C, then run its start command again).
+  - The saved token lives 300 seconds. Steps 6 to 12 must finish within
+    5 minutes of step 5. Each restart takes a few seconds, so this is easy.
+
+
+-------------------------------------------------------------------------
+SETUP
+-------------------------------------------------------------------------
+
+1. Terminal 3: go to the project and reset both configs to the starting
+   state (issuer signs with key-1, service trusts key-1 only).
+
+     cd /Users/venkateshtadinada/Documents/FDE-Prep/A2A_Scratch
+     export UV_PROJECT_ENVIRONMENT="$HOME/venv/a2aS"
+     printf '{ "active_kid": "key-1", "private_key_path": "~/secrets/keys/key-1-private.pem" }\n' > config/issuer.json
+     printf '{ "trusted_keys": { "key-1": "~/secrets/keys/key-1-public.pem" } }\n' > config/inventory_service.json
+     rm -f ~/secrets/rotation-old-token.jwt
+     cat config/issuer.json config/inventory_service.json
+
+   Expect: issuer says key-1; service lists only key-1.
+
+2. Terminal 1: start (or restart) the Inventory Service.
+
+     cd /Users/venkateshtadinada/Documents/FDE-Prep/A2A_Scratch
+     export UV_PROJECT_ENVIRONMENT="$HOME/venv/a2aS"
+     uv run uvicorn inventory_service.app:app --host 127.0.0.1 --port 8000
+
+   Expect: "Application startup complete."
+
+3. Terminal 2: start (or restart) the Token Issuer.
+
+     cd /Users/venkateshtadinada/Documents/FDE-Prep/A2A_Scratch
+     export UV_PROJECT_ENVIRONMENT="$HOME/venv/a2aS"
+     uv run uvicorn token_issuer.app:app --host 127.0.0.1 --port 8001
+
+   Expect first line: SIGNING KEY active_kid=key-1
+
+
+-------------------------------------------------------------------------
+PHASE 1 - ONLY KEY-1
+-------------------------------------------------------------------------
+
+4. Terminal 3: confirm the baseline.
+
+     uv run python scripts/check_rotation.py check single
+
+   Expect:
+     [SKIP] no saved token yet
+     [PASS] fresh token  kid=key-1  -> HTTP 200
+     ALL PASS
+
+5. Terminal 3: save an OLD key-1 token for later.   <-- 5-minute clock starts
+
+     uv run python scripts/check_rotation.py save
+
+   Expect: saved a token with kid=key-1
+
+
+-------------------------------------------------------------------------
+PHASE 2 - SERVICE LEARNS KEY-2 FIRST
+-------------------------------------------------------------------------
+
+6. Terminal 3: make the service trust BOTH keys.
+
+     printf '{ "trusted_keys": { "key-1": "~/secrets/keys/key-1-public.pem", "key-2": "~/secrets/keys/key-2-public.pem" } }\n' > config/inventory_service.json
+
+7. Terminal 1: restart the Inventory Service.
+
+     Ctrl+C
+     uv run uvicorn inventory_service.app:app --host 127.0.0.1 --port 8000
+
+
+-------------------------------------------------------------------------
+PHASE 3 - ISSUER SWITCHES TO KEY-2 (OVERLAP)
+-------------------------------------------------------------------------
+
+8. Terminal 3: switch the issuer's signing key to key-2.
+
+     printf '{ "active_kid": "key-2", "private_key_path": "~/secrets/keys/key-2-private.pem" }\n' > config/issuer.json
+
+9. Terminal 2: restart the Token Issuer.
+
+     Ctrl+C
+     uv run uvicorn token_issuer.app:app --host 127.0.0.1 --port 8001
+
+   Expect first line: SIGNING KEY active_kid=key-2
+
+10. Terminal 3: prove the overlap - old and new tokens both work.
+
+     uv run python scripts/check_rotation.py check overlap
+
+   Expect:
+     [PASS] saved token  kid=key-1  -> HTTP 200
+     [PASS] fresh token  kid=key-2  -> HTTP 200
+     ALL PASS
+
+
+-------------------------------------------------------------------------
+PHASE 4 - RETIRE KEY-1
+-------------------------------------------------------------------------
+
+11. Terminal 3: make the service trust ONLY key-2.
+
+     printf '{ "trusted_keys": { "key-2": "~/secrets/keys/key-2-public.pem" } }\n' > config/inventory_service.json
+
+    Terminal 1: restart the Inventory Service.
+
+     Ctrl+C
+     uv run uvicorn inventory_service.app:app --host 127.0.0.1 --port 8000
+
+12. Terminal 3: prove retirement.
+
+     uv run python scripts/check_rotation.py check retired
+
+   Expect:
+     [PASS] saved token  kid=key-1  -> HTTP 401
+     [PASS] fresh token  kid=key-2  -> HTTP 200
+     ALL PASS
+
+   Terminal 1 should log:  AUTHN FAILED reason=UnknownKeyIdError
+   (If it says ExpiredSignatureError instead, more than 5 minutes passed:
+    start again from step 1.)
+
+
+-------------------------------------------------------------------------
+REGRESSION
+-------------------------------------------------------------------------
+
+13. Terminal 3: everything from 05.1-05.6 still works (services keep running).
+
+     uv run pytest -v
+     uv run python scripts/check_remote_auth.py
+
+   Expect: 208 passed, then "55/55 checks passed".
+
+
+-------------------------------------------------------------------------
+TROUBLESHOOTING
+-------------------------------------------------------------------------
+
+  Fresh token shows the wrong kid      -> the issuer was not restarted
+                                          after editing config/issuer.json.
+  Fresh token gets 401 in step 10      -> the service was not restarted
+                                          after step 6 (it doesn't trust key-2).
+  Saved token shows kid=key-2          -> step 5 ran while the issuer was
+                                          on key-2. Start again from step 1.
+  Saved token gets 401 in step 10      -> it expired (5 min). Start again
+                                          from step 1.
+
+End state: issuer signs with key-2, service trusts key-2 only. That is the
+correct finished rotation; leave it that way.

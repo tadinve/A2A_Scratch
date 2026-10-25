@@ -2,7 +2,7 @@
 
 Day 04: authorization depends on the caller AND the resource.
 
-    authenticate (401) -> classify the SKU (404) -> authorize for that class (403) -> details (200)
+    authenticate JWT (401) -> classify the SKU (404) -> authorize for that class (403) -> details (200)
 Every error body has the same shape: {"status": "...", "message": "..."}.
 
 Run (keys come from inventory_service/.env):
@@ -51,16 +51,17 @@ async def consistent_error_body(request: Request, exc: StarletteHTTPException) -
 def get_stock(
     sku: str,
     # default=None lets a missing header reach our code (-> 401, not 422).
-    api_key: str | None = Header(default=None, alias="X-API-Key"),
+    authorization: str | None = Header(default=None),
 ):
-    # Step 1 - Authentication: key -> identity.
-    identity = authenticate(api_key)
-    if identity is None:
+    # Step 1 - Authentication: verified JWT -> principal (`sub` + `scope`).
+    principal = authenticate(authorization)
+    if principal is None:
         raise HTTPException(
             status_code=401,
             detail="Inventory access could not be authenticated.",
-            headers={"WWW-Authenticate": "ApiKey"},
+            headers={"WWW-Authenticate": "Bearer"},
         )
+    identity = principal.identity
 
     # Step 2 - Role: looked up on the server from the trusted identity.
     #          Nothing in the request (headers, query, body) can change it.
@@ -77,7 +78,17 @@ def get_stock(
 
     required = read_permission_for(classification["inventory_class"])
 
-    # Step 4 - Authorization: does this role grant the permission for this record's class?
+    # Step 4a - Token scope: did the issuer approve THIS authority for THIS token?
+    #           A token scoped to class B can't read class A, whatever the role allows.
+    if required not in principal.scopes:
+        logger.warning(
+            "FORBIDDEN identity=%s sku=%s token scope %s lacks %s (no detail lookup)",
+            identity, classification["sku"], sorted(principal.scopes), required,
+        )
+        raise HTTPException(status_code=403, detail="Caller is not permitted to read this inventory item.")
+
+    # Step 4b - Role: does this identity's role grant the permission for this class?
+    #           Both checks must pass. Scope narrows a token; it never exceeds the role.
     if not is_allowed(role, required):
         logger.warning(
             "FORBIDDEN identity=%s role=%s sku=%s lacks %s (no detail lookup)",
@@ -86,7 +97,7 @@ def get_stock(
         raise HTTPException(status_code=403, detail="Caller is not permitted to read this inventory item.")
 
     # Step 5 - Only now read the protected details.
-    logger.info("AUTHZ OK identity=%s role=%s sku=%s has %s -> detail lookup",
+    logger.info("AUTHZ OK identity=%s role=%s sku=%s scope+role grant %s -> detail lookup",
                 identity, role, classification["sku"], required)
     result = lookup_sku(sku)
     if result["status"] == "not_found":

@@ -1,14 +1,27 @@
-"""Inventory tool for the agent. Stage 03D: an HTTP client of inventory_service.
+"""Inventory tool for the agent: a client of the token issuer and the inventory service.
 
-The model calls get_stock(sku), exactly as on Days 01-02. Inside, this module
-sends GET /stock/{sku} to the inventory service with an X-API-Key header.
+The model calls get_stock(sku), exactly as on Days 01-02. Inside:
 
-This module never imports sqlite3 or inventory_service, and never reads the
-service's secret. If the service can't be reached, it fails closed: there is
-no fallback to local database access.
+    1. Get an access token for (issuer, client, requested scope):
+         - reuse a cached token while it has > REFRESH_MARGIN_SECONDS left, or
+         - POST {issuer}/token with X-Client-ID / X-Client-Secret / X-Scope
+    2. GET {service}/stock/{sku} with Authorization: Bearer <jwt>
+         - 401 on a CACHED token -> discard it, get a new one, retry ONCE
+         - 403 -> stop: a fresh token with the same scope can't fix it
+
+Day 05.5: the requested scope comes from INVENTORY_REQUESTED_SCOPE (config,
+never the model). Day 05.6: tokens have a lifecycle (issue, reuse, renew,
+expire). No refresh tokens: renewal re-authenticates with client credentials.
+
+This module never touches a private key, the jwt library, sqlite3, or
+inventory_service. Any failure fails closed: no local database fallback.
 """
 
+import hashlib
+import logging
 import os
+import threading
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -19,7 +32,9 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 DEFAULT_SERVICE_URL = "http://127.0.0.1:8000"
+DEFAULT_ISSUER_URL = "http://127.0.0.1:8001"
 TIMEOUT_SECONDS = 5.0
+REFRESH_MARGIN_SECONDS = 30  # renew a token this long before it expires
 
 _UNAVAILABLE = {"status": "error", "message": "Inventory is temporarily unavailable."}
 _UNAUTHENTICATED = {
@@ -30,6 +45,19 @@ _FORBIDDEN = {
     "status": "forbidden",
     "message": "This agent is not permitted to read inventory.",
 }
+
+# Shows each step of the security flow. Never logs secrets or tokens.
+logger = logging.getLogger("inventory_agent.flow")
+
+# Token cache: {cache_key: (token, expires_at)}. One entry per authority boundary:
+# a class_b token is never handed out for a class_a request.
+_cache: dict[tuple, tuple[str, float]] = {}
+_cache_lock = threading.Lock()
+
+
+def _now() -> float:
+    """Monotonic clock: unaffected by wall-clock changes. Tests replace this."""
+    return time.monotonic()
 
 
 def get_stock(sku: str) -> dict:
@@ -50,38 +78,170 @@ def get_stock(sku: str) -> dict:
     """
     normalized_sku = sku.strip().upper()
 
-    # Application code, not the model, supplies the credential.
+    request, failure = _token_request()
+    if failure:
+        return failure
+
+    # Step 1: a token for exactly this client and scope (cached or new).
+    token, from_cache, failure = _get_token(request)
+    if failure:
+        return failure
+
+    # Step 2: call the service.
+    response = _call_service(normalized_sku, token)
+    if response is None:
+        return dict(_UNAVAILABLE)
+
+    # 401 on a token we reused: it may have expired or been invalidated early.
+    # Renew once and retry once. Never loop.
+    if response.status_code == 401 and from_cache:
+        logger.warning("    cached token rejected (401): discarding it, renewing once, retrying once")
+        _invalidate(request["key"])
+        token, _, failure = _get_token(request, force_new=True)
+        if failure:
+            return failure
+        response = _call_service(normalized_sku, token)
+        if response is None:
+            return dict(_UNAVAILABLE)
+
+    return _map_service_response(response, normalized_sku, request["key"])
+
+
+# --------------------------------------------------------------------------- #
+# Token lifecycle
+# --------------------------------------------------------------------------- #
+def _token_request() -> tuple[dict | None, dict | None]:
+    """Collect issuer settings from config. Fail closed if anything is missing."""
+    client_id = os.environ.get("INVENTORY_CLIENT_ID")
     client_secret = os.environ.get("INVENTORY_CLIENT_SECRET")
-    if not client_secret:
-        # Fail closed locally: don't send an unauthenticated request.
-        return dict(_UNAUTHENTICATED)
+    if not client_id or not client_secret:
+        logger.warning("1/2 no client credentials configured; not calling the issuer")
+        return None, dict(_UNAUTHENTICATED)
 
-    base_url = os.environ.get("INVENTORY_SERVICE_URL", DEFAULT_SERVICE_URL).rstrip("/")
-    # quote(..., safe="") stops a SKU like "A/../B" from changing the URL path.
-    url = f"{base_url}/stock/{quote(normalized_sku, safe='')}"
+    scope = " ".join(sorted(set(os.environ.get("INVENTORY_REQUESTED_SCOPE", "").split())))
+    if not scope:
+        logger.warning("1/2 no INVENTORY_REQUESTED_SCOPE configured; not calling the issuer")
+        return None, dict(_UNAVAILABLE)  # never ask for "whatever I'm entitled to"
 
+    issuer_url = os.environ.get("INVENTORY_ISSUER_URL", DEFAULT_ISSUER_URL).rstrip("/")
+    # The secret itself is never stored in the key, only a fingerprint of it.
+    secret_fp = hashlib.sha256(client_secret.encode()).hexdigest()[:16]
+    return {
+        "issuer_url": issuer_url,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scope": scope,
+        "key": (issuer_url, client_id, secret_fp, scope),
+    }, None
+
+
+def _get_token(request: dict, *, force_new: bool = False) -> tuple[str | None, bool, dict | None]:
+    """Return (token, came_from_cache, failure)."""
+    key = request["key"]
+    if not force_new:
+        with _cache_lock:
+            cached = _cache.get(key)
+        if cached:
+            token, expires_at = cached
+            remaining = expires_at - _now()
+            if remaining > REFRESH_MARGIN_SECONDS:
+                logger.info("1/2 reusing cached token  scope=%r  (%ds left)", request["scope"], remaining)
+                return token, True, None
+            logger.info("1/2 cached token has %ds left (margin %ds): renewing", max(remaining, 0),
+                        REFRESH_MARGIN_SECONDS)
+            _invalidate(key)
+
+    token, failure = _fetch_token(request)
+    return token, False, failure
+
+
+def _fetch_token(request: dict) -> tuple[str | None, dict | None]:
+    """Authenticate to the issuer and cache the result."""
+    logger.info("1/2 agent -> issuer   POST /token  as client_id=%s scope=%r",
+                request["client_id"], request["scope"])
+    requested_at = _now()  # measure lifetime from BEFORE the request: conservative
     try:
-        response = httpx.get(
-            url,
-            headers={"X-API-Key": client_secret, "Accept": "application/json"},
+        response = httpx.post(
+            f"{request['issuer_url']}/token",
+            headers={"X-Client-ID": request["client_id"], "X-Client-Secret": request["client_secret"],
+                     "X-Scope": request["scope"]},
             timeout=TIMEOUT_SECONDS,
         )
     except httpx.RequestError:
-        # Connection refused, timeout, DNS failure... No HTTP status at all.
-        # Fail closed: never fall back to opening SQLite directly.
-        return dict(_UNAVAILABLE)
+        logger.warning("    issuer unreachable")
+        return None, dict(_UNAVAILABLE)
+    logger.info("    issuer -> agent   HTTP %s", response.status_code)
 
+    if response.status_code == 401:
+        return None, dict(_UNAUTHENTICATED)
+    if response.status_code == 403:
+        logger.warning("    issuer refused scope %r for this client", request["scope"])
+        return None, dict(_FORBIDDEN)
+    if response.status_code != 200:
+        return None, dict(_UNAVAILABLE)
+
+    try:
+        body = response.json()
+        token = body["access_token"]
+    except (ValueError, KeyError, TypeError):
+        return None, dict(_UNAVAILABLE)
+
+    try:
+        expires_in = int(body.get("expires_in", 0))
+    except (TypeError, ValueError):
+        expires_in = 0
+    if expires_in > 0:
+        with _cache_lock:
+            _cache[request["key"]] = (token, requested_at + expires_in)
+    else:
+        logger.warning("    issuer gave no usable expires_in: using this token once, not caching it")
+    return token, None
+
+
+def _invalidate(key: tuple) -> None:
+    with _cache_lock:
+        _cache.pop(key, None)
+
+
+def _clear_cache() -> None:
+    with _cache_lock:
+        _cache.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Service call
+# --------------------------------------------------------------------------- #
+def _call_service(normalized_sku: str, token: str) -> httpx.Response | None:
+    base_url = os.environ.get("INVENTORY_SERVICE_URL", DEFAULT_SERVICE_URL).rstrip("/")
+    # quote(..., safe="") stops a SKU like "A/../B" from changing the URL path.
+    url = f"{base_url}/stock/{quote(normalized_sku, safe='')}"
+    logger.info("2/2 agent -> service  GET /stock/%s  (Authorization: Bearer <jwt>)", normalized_sku)
+    try:
+        response = httpx.get(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=TIMEOUT_SECONDS,
+        )
+    except httpx.RequestError:
+        logger.warning("    service unreachable")
+        return None
+    logger.info("    service -> agent  HTTP %s", response.status_code)
+    return response
+
+
+def _map_service_response(response: httpx.Response, normalized_sku: str, key: tuple) -> dict:
     if response.status_code == 200:
         try:
-            return response.json()  # found, or the service's own "error" dict
+            return response.json()
         except ValueError:
             return dict(_UNAVAILABLE)
     if response.status_code == 404:
         return {"status": "not_found", "sku": normalized_sku}
     if response.status_code == 401:
+        _invalidate(key)  # never keep a token the service has rejected
         return dict(_UNAUTHENTICATED)
     if response.status_code == 403:
+        # Valid token, insufficient authority. Renewing with the same scope can't
+        # help, so no retry. The token stays cached: it is still good for what it allows.
         return dict(_FORBIDDEN)
-
-    # Anything else (500, 503, unexpected codes): don't guess.
     return dict(_UNAVAILABLE)

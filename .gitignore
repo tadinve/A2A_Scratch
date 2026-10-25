@@ -19,3 +19,9 @@ A2A Governance — Complete Learning Project.gdoc
 
 # ADK local session storage (chat history)
 .adk/
+
+# JWT signing keys (keys live in ~/secrets; never commit any copy)
+secrets/
+*.pem
+keys/
+*.jwt

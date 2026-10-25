@@ -1,13 +1,20 @@
-"""Test configuration for the inventory service.
+"""pytest fixtures. Shared state (keys, tokens, spy class) lives in tests/support.py."""
 
-Keys are set here, before the service is imported, so tests never depend on
-inventory_service/.env. load_dotenv does not override variables already set.
-"""
+import pytest
+from fastapi.testclient import TestClient
 
-import os
+from tests.support import RepoSpy, service
 
-READER_KEY = "test-reader-key"
-RESTRICTED_KEY = "test-restricted-key"
 
-os.environ["INVENTORY_AGENT_API_KEY"] = READER_KEY
-os.environ["RESTRICTED_AGENT_API_KEY"] = RESTRICTED_KEY
+@pytest.fixture
+def spy(monkeypatch):
+    s = RepoSpy()
+    # app.py imported these names directly, so patch the names app uses.
+    monkeypatch.setattr(service, "get_classification", s.get_classification)
+    monkeypatch.setattr(service, "lookup_sku", s.lookup_sku)
+    return s
+
+
+@pytest.fixture
+def client():
+    return TestClient(service.app)
