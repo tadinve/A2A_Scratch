@@ -25,3 +25,10 @@ secrets/
 *.pem
 keys/
 *.jwt
+
+# graphify: commit graphify/ (README + graph outputs); skip the local cache and
+# the sidecars that hold absolute paths on this machine. ./graphify-out is a
+# committed symlink to graphify/graphify-out.
+graphify/graphify-out/cache/
+graphify/graphify-out/.graphify_python
+graphify/graphify-out/.graphify_root

@@ -57,6 +57,7 @@ Restore the database afterwards (`mv data/inventory.db.bak data/inventory.db`).
 | `scripts/init_db.py` | Create and seed the database |
 | `data/inventory.db` | Generated SQLite database (git-ignored) |
 | `pyproject.toml`, `uv.lock` | Dependencies |
+| `graphify/` | Knowledge graph of this repo and how to rebuild it (see [graphify/README.md](graphify/README.md)) |
 
 ## Example trace
 
