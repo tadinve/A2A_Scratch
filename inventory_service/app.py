@@ -15,7 +15,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from inventory_service.auth import authenticate
+from inventory_service.auth import authenticate, authenticate_delegation
 from inventory_service.authz import is_allowed, read_permission_for, role_for
 from inventory_service.repository import get_classification, lookup_sku
 
@@ -61,6 +61,8 @@ def get_stock(
     authorization: str | None = Header(default=None),
     # Day 06.09 Experiment A: read ONLY to log it. Never used for any decision.
     x_human_user: str | None = Header(default=None, alias="X-Human-User"),
+    # Day 06.09B: a signed grant from the Delegation Authority (optional).
+    delegation_token: str | None = Header(default=None, alias="X-Delegation-Token"),
 ):
     # Step 1 - Authentication: verified JWT -> principal (`sub` + `scope`).
     principal = authenticate(authorization)
@@ -74,8 +76,18 @@ def get_stock(
     if x_human_user is not None:
         # %r quotes the value and escapes newlines, and [:64] bounds it, so a forged
         # header can't inject fake log lines.
-        logger.warning("UNTRUSTED CLAIM X-Human-User=%r asserted by machine=%s "
-                       "(logged only; not used for authorization)", x_human_user[:64], identity)
+        logger.warning("DIAGNOSTIC unverified_human_claim=%r asserted_by_machine=%s "
+                       "(not authenticated; never used for authorization or filtering)",
+                       x_human_user[:64], identity)
+
+    # Step 1b - Delegation (06.09B): if presented, it must verify AND name this machine as actor.
+    #           A bad delegation is an authentication failure for the whole request.
+    delegation = None
+    if delegation_token is not None:
+        delegation = authenticate_delegation(delegation_token, identity)
+        if delegation is None:
+            raise HTTPException(status_code=401, detail="Inventory access could not be authenticated.",
+                                headers={"WWW-Authenticate": "Bearer"})
 
     # Step 2 - Role: looked up on the server from the trusted identity.
     #          Nothing in the request (headers, query, body) can change it.
@@ -101,6 +113,14 @@ def get_stock(
         )
         raise HTTPException(status_code=403, detail="Caller is not permitted to read this inventory item.")
 
+    # Step 4a' - Delegated scope: when acting for a human, the human's grant must cover it too.
+    if delegation is not None and required not in delegation.scopes:
+        logger.warning(
+            "FORBIDDEN identity=%s on_behalf_of=%s sku=%s delegation scope %s lacks %s (no detail lookup)",
+            identity, delegation.human, classification["sku"], sorted(delegation.scopes), required,
+        )
+        raise HTTPException(status_code=403, detail="Caller is not permitted to read this inventory item.")
+
     # Step 4b - Role: does this identity's role grant the permission for this class?
     #           Both checks must pass. Scope narrows a token; it never exceeds the role.
     if not is_allowed(role, required):
@@ -111,8 +131,13 @@ def get_stock(
         raise HTTPException(status_code=403, detail="Caller is not permitted to read this inventory item.")
 
     # Step 5 - Only now read the protected details.
-    logger.info("AUTHZ OK identity=%s role=%s sku=%s scope+role grant %s -> detail lookup",
-                identity, role, classification["sku"], required)
+    if delegation is not None:
+        logger.info("AUTHZ OK identity=%s on_behalf_of=%s (verified delegation) role=%s sku=%s "
+                    "machine scope+delegation scope+role grant %s -> detail lookup",
+                    identity, delegation.human, role, classification["sku"], required)
+    else:
+        logger.info("AUTHZ OK identity=%s role=%s sku=%s scope+role grant %s -> detail lookup",
+                    identity, role, classification["sku"], required)
     result = lookup_sku(sku)
     if result["status"] == "not_found":
         raise HTTPException(status_code=404, detail="SKU not found")

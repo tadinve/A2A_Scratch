@@ -33,6 +33,8 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 DEFAULT_SERVICE_URL = "http://127.0.0.1:8000"
 DEFAULT_ISSUER_URL = "http://127.0.0.1:8001"
+DEFAULT_DELEGATION_URL = "http://127.0.0.1:8004"
+DELEGATION_REQUEST_SCOPE = "delegation.request"
 TIMEOUT_SECONDS = 5.0
 REFRESH_MARGIN_SECONDS = 30  # renew a token this long before it expires
 
@@ -79,10 +81,12 @@ def get_stock(sku: str) -> dict:
     return fetch_stock(sku)
 
 
-def fetch_stock(sku: str, *, forwarded_human: str | None = None) -> dict:
-    """get_stock for application code (not the model). Day 06.09 Experiment A:
-    optionally forwards an X-Human-User header. That header is an UNVERIFIED
-    assertion; the Inventory Service only logs it."""
+def fetch_stock(sku: str, *, forwarded_human: str | None = None,
+                delegation_token: str | None = None) -> dict:
+    """get_stock for application code (not the model).
+
+    06.09A: forwarded_human -> X-Human-User, an UNVERIFIED assertion (logged only).
+    06.09B: delegation_token -> X-Delegation-Token, a signed grant the service verifies."""
     normalized_sku = sku.strip().upper()
 
     request, failure = _token_request()
@@ -95,7 +99,7 @@ def fetch_stock(sku: str, *, forwarded_human: str | None = None) -> dict:
         return failure
 
     # Step 2: call the service.
-    response = _call_service(normalized_sku, token, forwarded_human)
+    response = _call_service(normalized_sku, token, forwarded_human, delegation_token)
     if response is None:
         return dict(_UNAVAILABLE)
 
@@ -107,7 +111,7 @@ def fetch_stock(sku: str, *, forwarded_human: str | None = None) -> dict:
         token, _, failure = _get_token(request, force_new=True)
         if failure:
             return failure
-        response = _call_service(normalized_sku, token, forwarded_human)
+        response = _call_service(normalized_sku, token, forwarded_human, delegation_token)
         if response is None:
             return dict(_UNAVAILABLE)
 
@@ -117,7 +121,7 @@ def fetch_stock(sku: str, *, forwarded_human: str | None = None) -> dict:
 # --------------------------------------------------------------------------- #
 # Token lifecycle
 # --------------------------------------------------------------------------- #
-def _token_request() -> tuple[dict | None, dict | None]:
+def _token_request(scope_override: str | None = None) -> tuple[dict | None, dict | None]:
     """Collect issuer settings from config. Fail closed if anything is missing."""
     client_id = os.environ.get("INVENTORY_CLIENT_ID")
     client_secret = os.environ.get("INVENTORY_CLIENT_SECRET")
@@ -125,7 +129,8 @@ def _token_request() -> tuple[dict | None, dict | None]:
         logger.warning("1/2 no client credentials configured; not calling the issuer")
         return None, dict(_UNAUTHENTICATED)
 
-    scope = " ".join(sorted(set(os.environ.get("INVENTORY_REQUESTED_SCOPE", "").split())))
+    raw_scope = scope_override if scope_override is not None else os.environ.get("INVENTORY_REQUESTED_SCOPE", "")
+    scope = " ".join(sorted(set(raw_scope.split())))
     if not scope:
         logger.warning("1/2 no INVENTORY_REQUESTED_SCOPE configured; not calling the issuer")
         return None, dict(_UNAVAILABLE)  # never ask for "whatever I'm entitled to"
@@ -218,7 +223,8 @@ def _clear_cache() -> None:
 # --------------------------------------------------------------------------- #
 # Service call
 # --------------------------------------------------------------------------- #
-def _call_service(normalized_sku: str, token: str, forwarded_human: str | None = None) -> httpx.Response | None:
+def _call_service(normalized_sku: str, token: str, forwarded_human: str | None = None,
+                  delegation_token: str | None = None) -> httpx.Response | None:
     base_url = os.environ.get("INVENTORY_SERVICE_URL", DEFAULT_SERVICE_URL).rstrip("/")
     # quote(..., safe="") stops a SKU like "A/../B" from changing the URL path.
     url = f"{base_url}/stock/{quote(normalized_sku, safe='')}"
@@ -226,7 +232,7 @@ def _call_service(normalized_sku: str, token: str, forwarded_human: str | None =
     try:
         response = httpx.get(
             url,
-            headers=_service_headers(token, forwarded_human),
+            headers=_service_headers(token, forwarded_human, delegation_token),
             timeout=TIMEOUT_SECONDS,
         )
     except httpx.RequestError:
@@ -236,10 +242,12 @@ def _call_service(normalized_sku: str, token: str, forwarded_human: str | None =
     return response
 
 
-def _service_headers(token: str, forwarded_human: str | None) -> dict:
+def _service_headers(token: str, forwarded_human: str | None, delegation_token: str | None = None) -> dict:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if forwarded_human is not None:
         headers["X-Human-User"] = forwarded_human   # an assertion, NOT a credential
+    if delegation_token is not None:
+        headers["X-Delegation-Token"] = delegation_token   # a signed, verifiable grant
     return headers
 
 
@@ -259,3 +267,46 @@ def _map_service_response(response: httpx.Response, normalized_sku: str, key: tu
         # help, so no retry. The token stays cached: it is still good for what it allows.
         return dict(_FORBIDDEN)
     return dict(_UNAVAILABLE)
+
+
+# --------------------------------------------------------------------------- #
+# Day 06.09B: exchange the human's token for a delegation token
+# --------------------------------------------------------------------------- #
+_DELEGATION_DENIED = {"status": "forbidden", "message": "This agent may not act for this user on that item."}
+
+
+def get_delegation(subject_token: str) -> tuple[str | None, dict | None]:
+    """Ask the Delegation Authority to let THIS agent act for the human in `subject_token`.
+
+    Proves the actor with a machine JWT minted for the authority (scope delegation.request)
+    and the human with HER own signed token. Requests INVENTORY_REQUESTED_SCOPE.
+    Returns (delegation_token, None) or (None, failure_dict). Not cached: one per request.
+    """
+    request, failure = _token_request(scope_override=DELEGATION_REQUEST_SCOPE)
+    if failure:
+        return None, failure
+    actor_token, _, failure = _get_token(request)
+    if failure:
+        return None, failure
+
+    scope = " ".join(sorted(set(os.environ.get("INVENTORY_REQUESTED_SCOPE", "").split())))
+    url = os.environ.get("INVENTORY_DELEGATION_URL", DEFAULT_DELEGATION_URL).rstrip("/")
+    logger.info("1b  agent -> delegation authority  POST /delegate  scope=%r", scope)
+    try:
+        response = httpx.post(f"{url}/delegate", headers={"Authorization": f"Bearer {actor_token}"},
+                              json={"subject_token": subject_token, "scope": scope}, timeout=TIMEOUT_SECONDS)
+    except httpx.RequestError:
+        logger.warning("    delegation authority unreachable")
+        return None, dict(_UNAVAILABLE)
+    logger.info("    delegation authority -> agent  HTTP %s", response.status_code)
+    if response.status_code == 200:
+        try:
+            return response.json()["delegation_token"], None
+        except (ValueError, KeyError, TypeError):
+            return None, dict(_UNAVAILABLE)
+    if response.status_code == 403:
+        return None, dict(_DELEGATION_DENIED)
+    if response.status_code == 401:
+        _invalidate(request["key"])
+        return None, dict(_UNAUTHENTICATED)
+    return None, dict(_UNAVAILABLE)

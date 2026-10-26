@@ -34,8 +34,9 @@ def tamper(token, **changes):
 @pytest.fixture
 def downstream(monkeypatch):
     calls = []
+    monkeypatch.setattr(agent_app.tools, "get_delegation", lambda subject_token: ("stub-delegation", None))
     monkeypatch.setattr(agent_app.tools, "fetch_stock",
-                        lambda sku, forwarded_human=None: calls.append(sku) or {"status": "found", "sku": sku, "name": "x", "quantity": 1})
+                        lambda sku, **kw: calls.append(sku) or {"status": "found", "sku": sku, "name": "x", "quantity": 1})
     return calls
 
 

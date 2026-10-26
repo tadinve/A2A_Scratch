@@ -83,3 +83,43 @@ def verify_token(token: str, trusted_keys: dict[str, RSAPublicKey]) -> dict:
         audience=EXPECTED_AUDIENCE,
         options={"require": REQUIRED_CLAIMS},
     )
+
+
+# --------------------------------------------------------------------------- #
+# Day 06.09B: delegation tokens from the Delegation Authority
+# --------------------------------------------------------------------------- #
+DELEGATION_REQUIRED_CLAIMS = ["iss", "sub", "act", "aud", "scope", "iat", "exp"]
+
+
+def load_delegation_trust(config_path: Path, project_root: Path) -> tuple[str, dict[str, RSAPublicKey]] | None:
+    """Read the optional "delegation" block -> (issuer, {kid: key}), or None if absent."""
+    try:
+        config = json.loads(Path(config_path).read_text())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"service config not readable at {config_path}: {exc}") from None
+    block = config.get("delegation") if isinstance(config, dict) else None
+    if block is None:
+        return None
+    issuer, entries = block.get("issuer"), block.get("trusted_keys")
+    if not isinstance(issuer, str) or not issuer or not isinstance(entries, dict) or not entries:
+        raise RuntimeError(f"{config_path}: delegation needs an issuer and trusted_keys")
+    keys = {}
+    for kid, raw_path in entries.items():
+        path = Path(raw_path).expanduser()
+        keys[kid] = load_public_key(path if path.is_absolute() else project_root / path)
+    return issuer, keys
+
+
+def verify_delegation(token: str, issuer: str, keys: dict[str, RSAPublicKey]) -> dict:
+    """Return verified delegation claims, or raise jwt.InvalidTokenError."""
+    kid = jwt.get_unverified_header(token).get("kid")
+    if not isinstance(kid, str) or kid not in keys:
+        raise UnknownKeyIdError("delegation kid is not trusted")
+    claims = jwt.decode(token, keys[kid], algorithms=ALLOWED_ALGORITHMS, issuer=issuer,
+                        audience=EXPECTED_AUDIENCE, options={"require": DELEGATION_REQUIRED_CLAIMS})
+    act = claims.get("act")
+    if not isinstance(act, dict) or not isinstance(act.get("sub"), str) or not act["sub"]:
+        raise jwt.InvalidTokenError("delegation act.sub missing")
+    if not isinstance(claims.get("scope"), str) or not isinstance(claims.get("sub"), str):
+        raise jwt.InvalidTokenError("delegation sub/scope malformed")
+    return claims

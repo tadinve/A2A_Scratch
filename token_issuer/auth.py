@@ -20,13 +20,23 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 READ_CLASS_A = "inventory.read.class_a"
 READ_CLASS_B = "inventory.read.class_b"
 READ_CLASS_C = "inventory.read.class_c"
-KNOWN_SCOPES = frozenset({READ_CLASS_A, READ_CLASS_B, READ_CLASS_C})
+# Day 06.09B: lets an agent ask the delegation authority to act for a human.
+DELEGATION_REQUEST = "delegation.request"
+KNOWN_SCOPES = frozenset({READ_CLASS_A, READ_CLASS_B, READ_CLASS_C, DELEGATION_REQUEST})
+
+# Each scope belongs to exactly one audience; a token is minted for ONE audience.
+SCOPE_AUDIENCE = {
+    READ_CLASS_A: "inventory-service",
+    READ_CLASS_B: "inventory-service",
+    READ_CLASS_C: "inventory-service",
+    DELEGATION_REQUEST: "a2a-delegation-authority",
+}
 
 REGISTERED_CLIENTS = {
     "inventory-agent": {
         "secret_env": "CLIENT_SECRET_INVENTORY_AGENT",
         "identity": "inventory-agent",
-        "allowed_scopes": {READ_CLASS_A, READ_CLASS_B, READ_CLASS_C},
+        "allowed_scopes": {READ_CLASS_A, READ_CLASS_B, READ_CLASS_C, DELEGATION_REQUEST},
     },
     "restricted-agent": {
         "secret_env": "CLIENT_SECRET_RESTRICTED_AGENT",
@@ -85,3 +95,9 @@ def parse_scope(raw: str | None) -> frozenset[str] | None:
         return None
     scopes = frozenset(raw.split())
     return scopes or None
+
+
+def audience_for(scopes: frozenset[str]) -> str | None:
+    """The single audience these scopes belong to, or None if they span several."""
+    audiences = {SCOPE_AUDIENCE[s] for s in scopes}
+    return audiences.pop() if len(audiences) == 1 else None

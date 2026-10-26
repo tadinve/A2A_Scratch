@@ -1,1 +1,7 @@
-{ "trusted_keys": { "key-2": "~/secrets/keys/key-2-public.pem" } }
+{
+  "trusted_keys": { "key-2": "~/secrets/keys/key-2-public.pem" },
+  "delegation": {
+    "issuer": "a2a-delegation-authority",
+    "trusted_keys": { "delegation-key-1": "~/secrets/keys/delegation-key-1-public.pem" }
+  }
+}

@@ -52,7 +52,18 @@ KEY2_PRIVATE_FILE.chmod(0o600)
 ISSUER_CONFIG_FILE = _key_dir / "issuer.json"
 ISSUER_CONFIG_FILE.write_text(json.dumps({"active_kid": "key-1", "private_key_path": str(PRIVATE_KEY_FILE)}))
 SERVICE_CONFIG_FILE = _key_dir / "inventory_service.json"
-SERVICE_CONFIG_FILE.write_text(json.dumps({"trusted_keys": {"key-1": str(PUBLIC_KEY_FILE)}}))
+# Day 06.09B: a delegation-authority key pair; the service trusts its public half.
+DELEGATION_PRIVATE_PEM, DELEGATION_PUBLIC_PEM = _keypair()
+DELEGATION_PRIVATE_FILE = _key_dir / "delegation-key-1-private.pem"
+DELEGATION_PRIVATE_FILE.write_bytes(DELEGATION_PRIVATE_PEM)
+DELEGATION_PRIVATE_FILE.chmod(0o600)
+DELEGATION_PUBLIC_FILE = _key_dir / "delegation-key-1-public.pem"
+DELEGATION_PUBLIC_FILE.write_bytes(DELEGATION_PUBLIC_PEM)
+SERVICE_CONFIG_FILE.write_text(json.dumps({
+    "trusted_keys": {"key-1": str(PUBLIC_KEY_FILE)},
+    "delegation": {"issuer": "a2a-delegation-authority",
+                   "trusted_keys": {"delegation-key-1": str(DELEGATION_PUBLIC_FILE)}},
+}))
 os.environ["ISSUER_CONFIG"] = str(ISSUER_CONFIG_FILE)
 os.environ["INVENTORY_SERVICE_CONFIG"] = str(SERVICE_CONFIG_FILE)
 
@@ -79,6 +90,22 @@ AGENT_CONFIG_FILE.write_text(json.dumps({
     "trusted_human_keys": {"identity-key-1": str(IDENTITY_PUBLIC_FILE)},
 }))
 os.environ["INVENTORY_AGENT_CONFIG"] = str(AGENT_CONFIG_FILE)
+
+# Day 06.09B: the Delegation Authority trusts the human identity key and the machine
+# issuer key, with test policy: Alice (user-001) may read A and B, Julie (user-002) only B.
+A_, B_, C_ = "inventory.read.class_a", "inventory.read.class_b", "inventory.read.class_c"
+DELEGATION_CONFIG_FILE = _key_dir / "delegation_authority.json"
+DELEGATION_CONFIG_FILE.write_text(json.dumps({
+    "issuer": "a2a-delegation-authority", "token_audience": "inventory-service", "token_lifetime_seconds": 300,
+    "active_kid": "delegation-key-1", "private_key_path": str(DELEGATION_PRIVATE_FILE),
+    "trusted_human": {"issuer": "a2a-human-identity-service", "keys": {"identity-key-1": str(IDENTITY_PUBLIC_FILE)}},
+    "trusted_actor": {"issuer": "a2a-local-issuer", "audience": "a2a-delegation-authority",
+                      "required_scope": "delegation.request", "keys": {"key-1": str(PUBLIC_KEY_FILE)}},
+    "policy": {"human_permissions": {"user-001": [A_, B_], "user-002": [B_]},
+               "actor_permissions": {"inventory-agent": [A_, B_, C_]},
+               "may_act_for": {"inventory-agent": ["user-001", "user-002"]}},
+}))
+os.environ["DELEGATION_AUTHORITY_CONFIG"] = str(DELEGATION_CONFIG_FILE)
 
 READER_CLIENT = ("inventory-agent", "test-reader-client-secret")
 RESTRICTED_CLIENT = ("restricted-agent", "test-restricted-client-secret")

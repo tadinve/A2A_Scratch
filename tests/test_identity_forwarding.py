@@ -27,52 +27,8 @@ def alice_token():
     return human_tokens.issue_user_token(load_config(), human_tokens.load_private_key(IDENTITY_PRIVATE_FILE), "user-001")
 
 
-@pytest.fixture
-def wired(monkeypatch, spy):
-    """Agent -> REAL issuer + REAL service; capture what the agent sends downstream."""
-    issuer_http, service_http = TestClient(issuer_app.app), TestClient(service.app)
-    sent = []
-
-    def get_(url, headers=None, timeout=None):
-        sent.append(dict(headers or {}))
-        return service_http.get(urlsplit(url).path, headers=headers)
-
-    monkeypatch.setattr(tools.httpx, "post", lambda url, headers=None, timeout=None: issuer_http.post("/token", headers=headers))
-    monkeypatch.setattr(tools.httpx, "get", get_)
-    for k, v in {"INVENTORY_CLIENT_ID": READER_CLIENT[0], "INVENTORY_CLIENT_SECRET": READER_CLIENT[1],
-                 "INVENTORY_ISSUER_URL": "http://issuer", "INVENTORY_SERVICE_URL": "http://inventory",
-                 "INVENTORY_REQUESTED_SCOPE": "inventory.read.class_b"}.items():
-        monkeypatch.setenv(k, v)
-    monkeypatch.delenv("EXPERIMENT_FORWARD_HUMAN_AS", raising=False)
-    tools._clear_cache()
-    yield sent
-    tools._clear_cache()
-
-
-def ask_agent(sku="WIDGET-B"):
-    return TestClient(agent_app.app).get(f"/agent/stock/{sku}", headers={"Authorization": f"Bearer {alice_token()}"})
-
-
-# --------------------------------------------------------------------------- #
-# The experiment, end to end
-# --------------------------------------------------------------------------- #
-def test_agent_forwards_the_verified_human_as_a_header(wired, caplog):
-    with caplog.at_level(logging.INFO):
-        r = ask_agent()
-    assert r.status_code == 200
-    assert wired[-1]["X-Human-User"] == "user-001"
-    assert "UNTRUSTED CLAIM X-Human-User='user-001' asserted by machine=inventory-agent" in caplog.text
-
-
-def test_agent_can_be_made_to_forward_admin_and_the_service_cannot_tell(wired, monkeypatch, caplog):
-    monkeypatch.setenv("EXPERIMENT_FORWARD_HUMAN_AS", "admin")
-    with caplog.at_level(logging.INFO):
-        r = ask_agent()
-    assert r.status_code == 200                              # same outcome as for Alice
-    assert wired[-1]["X-Human-User"] == "admin"              # Alice logged in; the agent claims "admin"
-    assert r.json()["authenticated_human"] == "user-001"     # the agent KNOWS it was Alice...
-    assert "EXPERIMENT forwarding X-Human-User='admin' instead of verified human=user-001" in caplog.text
-    assert "UNTRUSTED CLAIM X-Human-User='admin'" in caplog.text   # ...the service just sees a string
+# (06.09B replaced the agent's bare X-Human-User with a signed delegation token; the
+#  service-level guarantees below still hold for any caller that sends the header.)
 
 
 # --------------------------------------------------------------------------- #
@@ -114,7 +70,7 @@ def test_forged_header_cannot_inject_log_lines(client, spy, caplog):
             get(client, "WIDGET-B", READER_TOKEN, headers={"X-Human-User": forged})
         except (_h.LocalProtocolError, ValueError):
             pytest.skip("HTTP client refuses newlines in headers, so injection can't even be sent")
-    lines = [l for l in caplog.text.splitlines() if "UNTRUSTED CLAIM" in l]
+    lines = [l for l in caplog.text.splitlines() if "unverified_human_claim" in l]
     assert len(lines) == 1 and "\\n" in lines[0]
 
 
@@ -128,3 +84,11 @@ def test_authorization_code_never_reads_the_claim():
     # The claim parameter is used in exactly one place: the log statement.
     source = inspect.getsource(service.get_stock)
     assert source.count("x_human_user") == 3   # parameter, the None check, the log argument
+
+
+def test_claim_is_never_labelled_authenticated(client, spy, caplog):
+    with caplog.at_level(logging.INFO):
+        get(client, "WIDGET-B", READER_TOKEN, headers={"X-Human-User": "admin"})
+    claim_lines = [l for l in caplog.text.splitlines() if "admin" in l]
+    assert claim_lines and all("unverified_human_claim" in l for l in claim_lines)
+    assert not any("authenticated_human" in l for l in claim_lines)

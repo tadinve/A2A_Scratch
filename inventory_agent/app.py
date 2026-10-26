@@ -9,10 +9,10 @@
     4. The Inventory Service authenticates + authorizes the MACHINE only.     -> 401/403 at service
     5. Return the stock to Alice. Neither JWT is ever echoed.
 
-Day 06.09 Experiment A (INSECURE BY DESIGN): the agent also sends
-X-Human-User: <verified sub>. Set EXPERIMENT_FORWARD_HUMAN_AS=admin to make it
-forward any value instead. The Inventory Service only LOGS that header as an
-untrusted claim: nothing proves the agent is telling the truth.
+Day 06.09B: instead of an unverifiable X-Human-User header (06.09A), the agent
+exchanges Alice's OWN token at the Delegation Authority for a signed delegation
+JWT {sub: user-001, act: {sub: inventory-agent}, aud: inventory-service, scope},
+and sends it as X-Delegation-Token. The Inventory Service verifies it itself.
 
 Run:  uv run uvicorn inventory_agent.app:app --host 127.0.0.1 --port 8003
 """
@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from inventory_agent import tools
-from inventory_agent.human_auth import authenticate_human, get_trust
+from inventory_agent.human_auth import authenticate_human, extract_bearer, get_trust
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -60,14 +60,14 @@ def get_stock(sku: str, authorization: str | None = Header(default=None)):
     machine = os.environ.get("INVENTORY_CLIENT_ID", "inventory-agent")
     logger.info("AGENT REQUEST human=%s machine=%s operation=inventory.read sku=%s", human_sub, machine, sku)
 
-    # 06.09 Experiment A: forward the human as a plain header. The override shows that
-    # an authenticated machine can assert ANY identity; nothing binds this header to Alice.
-    forwarded = os.environ.get("EXPERIMENT_FORWARD_HUMAN_AS") or human_sub
-    if forwarded != human_sub:
-        logger.warning("EXPERIMENT forwarding X-Human-User=%r instead of verified human=%s", forwarded, human_sub)
-
-    # 2-4. Machine path, unchanged from Day 05: the agent's own credentials, its own token.
-    result = tools.fetch_stock(sku, forwarded_human=forwarded)
+    # 06.09B: exchange Alice's own token for a delegation grant. The agent can't
+    # name a different human here: only a token that human's login produced works.
+    delegation_token, failure = tools.get_delegation(extract_bearer(authorization))
+    if failure:
+        result = failure
+    else:
+        # 2-4. Machine JWT (who is calling) + delegation JWT (for whom, and what for).
+        result = tools.fetch_stock(sku, delegation_token=delegation_token)
     status = result.get("status", "error")
     logger.info("AGENT RESULT human=%s machine=%s sku=%s status=%s", human_sub, machine, sku, status)
 

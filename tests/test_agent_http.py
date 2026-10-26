@@ -22,6 +22,7 @@ from inventory_agent import app as agent_app
 from inventory_agent import tools
 from inventory_agent.human_auth import load_trust
 from token_issuer import app as issuer_app
+from delegation_authority import app as authority_app
 
 FOUND_A = {"status": "found", "sku": "WIDGET-A", "name": "Standard Widget", "quantity": 30}
 
@@ -48,9 +49,10 @@ def machine_calls(monkeypatch):
     """Replace the agent's machine call; record whether it happened."""
     calls = []
 
-    def fake_fetch_stock(sku, forwarded_human=None):
+    def fake_fetch_stock(sku, **kw):
         calls.append(sku)
         return dict(FOUND_A)
+    monkeypatch.setattr(agent_app.tools, "get_delegation", lambda subject_token: ("stub-delegation", None))
     monkeypatch.setattr(agent_app.tools, "fetch_stock", fake_fetch_stock)
     return calls
 
@@ -147,7 +149,8 @@ def test_logs_record_the_human_but_never_a_token(agent, machine_calls, caplog):
 
 @pytest.mark.parametrize("status, http", [("not_found", 404), ("forbidden", 403), ("error", 503), ("unauthenticated", 502)])
 def test_machine_side_outcomes_map_to_http(agent, monkeypatch, status, http):
-    monkeypatch.setattr(agent_app.tools, "fetch_stock", lambda sku, forwarded_human=None: {"status": status, "message": "x"})
+    monkeypatch.setattr(agent_app.tools, "get_delegation", lambda subject_token: ("stub-delegation", None))
+    monkeypatch.setattr(agent_app.tools, "fetch_stock", lambda sku, **kw: {"status": status, "message": "x"})
     assert ask(agent, human_token()).status_code == http
 
 
@@ -165,7 +168,13 @@ def test_bad_trust_config_fails_startup(tmp_path):
 @pytest.fixture
 def real_machine_path(monkeypatch, spy):
     issuer_http, service_http = TestClient(issuer_app.app), TestClient(service.app)
-    monkeypatch.setattr(tools.httpx, "post", lambda url, headers=None, timeout=None: issuer_http.post("/token", headers=headers))
+    authority_http = TestClient(authority_app.app)
+
+    def post(url, headers=None, timeout=None, json=None):
+        if urlsplit(url).path == "/delegate":
+            return authority_http.post("/delegate", headers=headers, json=json)
+        return issuer_http.post("/token", headers=headers)
+    monkeypatch.setattr(tools.httpx, "post", post)
     monkeypatch.setattr(tools.httpx, "get", lambda url, headers=None, timeout=None: service_http.get(urlsplit(url).path, headers=headers))
     monkeypatch.setenv("INVENTORY_CLIENT_ID", READER_CLIENT[0])
     monkeypatch.setenv("INVENTORY_CLIENT_SECRET", READER_CLIENT[1])
@@ -177,7 +186,7 @@ def real_machine_path(monkeypatch, spy):
 
 
 @pytest.mark.parametrize("scope, sku, want_http, want_status", [
-    ("inventory.read.class_a inventory.read.class_b inventory.read.class_c", "WIDGET-A", 200, "found"),
+    ("inventory.read.class_a inventory.read.class_b", "WIDGET-A", 200, "found"),
     ("inventory.read.class_b", "WIDGET-A", 403, "forbidden"),    # 05.5 scope rules preserved
     ("inventory.read.class_b", "WIDGET-B", 200, "found"),
     ("inventory.read.class_b", "WIDGET-X", 404, "not_found"),
@@ -192,22 +201,28 @@ def test_agent_uses_machine_credentials_and_existing_rules_hold(agent, real_mach
 
 
 def test_invalid_human_never_reaches_the_inventory_service(agent, real_machine_path, monkeypatch):
-    monkeypatch.setenv("INVENTORY_REQUESTED_SCOPE", "inventory.read.class_c")
-    ask(agent, "not-a-jwt", "WIDGET-C")
+    monkeypatch.setenv("INVENTORY_REQUESTED_SCOPE", "inventory.read.class_b")
+    ask(agent, "not-a-jwt", "WIDGET-B")
     assert real_machine_path.sqlite_touched is False
 
 
 # --------------------------------------------------------------------------- #
 # Day 06.08 acceptance: both credentials, each verified by its own party
 # --------------------------------------------------------------------------- #
-ALL_SCOPES = "inventory.read.class_a inventory.read.class_b inventory.read.class_c"
+ALL_SCOPES = "inventory.read.class_a inventory.read.class_b"   # all Alice may delegate
 
 
 @pytest.fixture
 def wire(monkeypatch, spy):
     """Route the agent's machine calls into the REAL issuer and service; record service statuses."""
     issuer_http, service_http = TestClient(issuer_app.app), TestClient(service.app)
+    authority_http = TestClient(authority_app.app)
     seen = {"service_status": [], "corrupt_machine_token": False}
+
+    def post(url, headers=None, timeout=None, json=None):
+        if urlsplit(url).path == "/delegate":
+            return authority_http.post("/delegate", headers=headers, json=json)
+        return issuer_http.post("/token", headers=headers)
 
     def get(url, headers=None, timeout=None):
         headers = dict(headers or {})
@@ -217,7 +232,7 @@ def wire(monkeypatch, spy):
         seen["service_status"].append(r.status_code)
         return r
 
-    monkeypatch.setattr(tools.httpx, "post", lambda url, headers=None, timeout=None: issuer_http.post("/token", headers=headers))
+    monkeypatch.setattr(tools.httpx, "post", post)
     monkeypatch.setattr(tools.httpx, "get", get)
     for k, v in {"INVENTORY_CLIENT_ID": READER_CLIENT[0], "INVENTORY_CLIENT_SECRET": READER_CLIENT[1],
                  "INVENTORY_ISSUER_URL": "http://issuer", "INVENTORY_SERVICE_URL": "http://inventory",
@@ -265,13 +280,12 @@ def test_0608_machine_jwt_sent_to_agent_as_human_credential_is_401(agent, wire):
     assert wire["service_status"] == []
 
 
-def test_0609_only_the_machine_token_and_a_plain_claim_go_downstream(agent, wire, monkeypatch):
+def test_0609b_machine_token_and_delegation_go_downstream_never_the_human_token(agent, wire, monkeypatch):
     sent = []
     real_get = tools.httpx.get
     monkeypatch.setattr(tools.httpx, "get", lambda url, headers=None, timeout=None: sent.append(dict(headers or {})) or real_get(url, headers=headers, timeout=timeout))
     token = human_token()
     ask(agent, token, "WIDGET-A")
     (headers,) = sent
-    assert set(headers) == {"Authorization", "Accept", "X-Human-User"}
-    assert headers["X-Human-User"] == "user-001"              # 06.09 Experiment A: a plain assertion
+    assert set(headers) == {"Authorization", "Accept", "X-Delegation-Token"}   # no bare X-Human-User
     assert token not in str(headers)                          # the HUMAN token never goes downstream

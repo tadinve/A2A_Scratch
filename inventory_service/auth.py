@@ -13,7 +13,7 @@ from pathlib import Path
 import jwt
 from dotenv import load_dotenv
 
-from inventory_service.tokens import load_trusted_keys, verify_token
+from inventory_service.tokens import load_delegation_trust, load_trusted_keys, verify_delegation, verify_token
 
 # Service-side configuration only. Real environment variables take precedence.
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -28,6 +28,9 @@ CONFIG_PATH = Path(
 # Day 05.8: {kid: public key}, loaded once at startup. Trusting a new key or
 # retiring an old one is a config change plus a restart. A bad config stops startup.
 _TRUSTED_KEYS = load_trusted_keys(CONFIG_PATH, PROJECT_ROOT)
+
+# Day 06.09B: the Delegation Authority's public keys (None = delegation not configured).
+_DELEGATION_TRUST = load_delegation_trust(CONFIG_PATH, PROJECT_ROOT)
 
 
 @dataclass(frozen=True)
@@ -73,3 +76,30 @@ def authenticate(authorization: str | None) -> Principal | None:
         logger.warning("AUTHN FAILED reason=scope claim is not a string")
         return None
     return Principal(identity=sub, scopes=frozenset(scope.split()))
+
+
+@dataclass(frozen=True)
+class Delegation:
+    """A verified grant: `human` authorized `actor` for `scopes`, at this service, until exp."""
+    human: str
+    actor: str
+    scopes: frozenset[str]
+
+
+def authenticate_delegation(token: str, machine_identity: str) -> Delegation | None:
+    """Verify a delegation JWT AND bind it to the authenticated machine. None on any failure."""
+    if _DELEGATION_TRUST is None:
+        logger.warning("DELEGATION FAILED reason=delegation not configured")
+        return None
+    issuer, keys = _DELEGATION_TRUST
+    try:
+        claims = verify_delegation(token, issuer, keys)
+    except jwt.InvalidTokenError as exc:
+        logger.warning("DELEGATION FAILED reason=%s", type(exc).__name__)
+        return None
+    if claims["act"]["sub"] != machine_identity:
+        # A valid grant for SOME agent, presented by a different one: not yours to use.
+        logger.warning("DELEGATION FAILED reason=actor mismatch act.sub=%s machine=%s",
+                       claims["act"]["sub"], machine_identity)
+        return None
+    return Delegation(human=claims["sub"], actor=claims["act"]["sub"], scopes=frozenset(claims["scope"].split()))

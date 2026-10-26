@@ -1,0 +1,31 @@
+{
+  "issuer": "a2a-delegation-authority",
+  "token_audience": "inventory-service",
+  "token_lifetime_seconds": 300,
+  "active_kid": "delegation-key-1",
+  "private_key_path": "~/secrets/keys/delegation-key-1-private.pem",
+
+  "trusted_human": {
+    "issuer": "a2a-human-identity-service",
+    "keys": { "identity-key-1": "~/secrets/keys/identity-key-1-public.pem" }
+  },
+  "trusted_actor": {
+    "issuer": "a2a-local-issuer",
+    "audience": "a2a-delegation-authority",
+    "required_scope": "delegation.request",
+    "keys": { "key-2": "~/secrets/keys/key-2-public.pem" }
+  },
+
+  "policy": {
+    "human_permissions": {
+      "user-001": ["inventory.read.class_a", "inventory.read.class_b"],
+      "user-002": ["inventory.read.class_b"]
+    },
+    "actor_permissions": {
+      "inventory-agent": ["inventory.read.class_a", "inventory.read.class_b", "inventory.read.class_c"]
+    },
+    "may_act_for": {
+      "inventory-agent": ["user-001", "user-002"]
+    }
+  }
+}

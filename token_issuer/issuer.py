@@ -75,7 +75,7 @@ def format_scope(scopes) -> str:
     return " ".join(sorted(scopes))
 
 
-def issue_access_token(identity: str, scopes, *, now: int | None = None) -> str:
+def issue_access_token(identity: str, scopes, *, now: int | None = None, audience: str = AUDIENCE) -> str:
     """Sign a token for an identity and scopes the issuer has ALREADY approved.
 
     `identity` must come from authenticate_client(), and `scopes` must already be
@@ -86,7 +86,7 @@ def issue_access_token(identity: str, scopes, *, now: int | None = None) -> str:
     claims = {
         "iss": ISSUER,
         "sub": identity,
-        "aud": AUDIENCE,
+        "aud": audience,
         "scope": format_scope(scopes),
         "iat": issued_at,
         "exp": issued_at + LIFETIME_SECONDS,

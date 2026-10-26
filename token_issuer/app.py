@@ -22,7 +22,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from token_issuer.auth import KNOWN_SCOPES, authenticate_client, parse_scope
+from token_issuer.auth import KNOWN_SCOPES, audience_for, authenticate_client, parse_scope
 from token_issuer import issuer
 from token_issuer.issuer import LIFETIME_SECONDS, format_scope, issue_access_token
 
@@ -87,11 +87,17 @@ def token(
         logger.warning("TOKEN DENIED client_id=%s reason=not entitled to %s", client_id, sorted(not_allowed))
         raise HTTPException(status_code=403, detail="Client is not entitled to the requested scope.")
 
-    # 4. Mint: identity from authentication, scope from the approved request.
+    # 4. One token, one audience: the scopes decide where the token may be used.
+    audience = audience_for(requested)
+    if audience is None:
+        logger.warning("TOKEN DENIED client_id=%s reason=scopes span several audiences", client_id)
+        raise HTTPException(status_code=400, detail="Requested scopes belong to different audiences.")
+
+    # 5. Mint: identity from authentication, scope from the approved request.
     granted = format_scope(requested)
-    access_token = issue_access_token(client.identity, requested)
-    logger.info("TOKEN ISSUED client_id=%s sub=%s scope=%r kid=%s expires_in=%s",
-                client_id, client.identity, granted, issuer.ACTIVE_KID, LIFETIME_SECONDS)
+    access_token = issue_access_token(client.identity, requested, audience=audience)
+    logger.info("TOKEN ISSUED client_id=%s sub=%s aud=%s scope=%r kid=%s expires_in=%s",
+                client_id, client.identity, audience, granted, issuer.ACTIVE_KID, LIFETIME_SECONDS)
 
     return JSONResponse(
         {"access_token": access_token, "token_type": "Bearer",
