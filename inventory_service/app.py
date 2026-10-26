@@ -47,11 +47,20 @@ async def consistent_error_body(request: Request, exc: StarletteHTTPException) -
     )
 
 
+# Day 06.01: INTENTIONALLY INSECURE. Echoes whatever identity the caller claims.
+# No token, no database, no relation to the protected /stock endpoint below.
+@app.get("/whoami")
+def whoami(user: str):
+    return {"claimed_user": user, "authenticated": False}
+
+
 @app.get("/stock/{sku}")
 def get_stock(
     sku: str,
     # default=None lets a missing header reach our code (-> 401, not 422).
     authorization: str | None = Header(default=None),
+    # Day 06.09 Experiment A: read ONLY to log it. Never used for any decision.
+    x_human_user: str | None = Header(default=None, alias="X-Human-User"),
 ):
     # Step 1 - Authentication: verified JWT -> principal (`sub` + `scope`).
     principal = authenticate(authorization)
@@ -62,6 +71,11 @@ def get_stock(
             headers={"WWW-Authenticate": "Bearer"},
         )
     identity = principal.identity
+    if x_human_user is not None:
+        # %r quotes the value and escapes newlines, and [:64] bounds it, so a forged
+        # header can't inject fake log lines.
+        logger.warning("UNTRUSTED CLAIM X-Human-User=%r asserted by machine=%s "
+                       "(logged only; not used for authorization)", x_human_user[:64], identity)
 
     # Step 2 - Role: looked up on the server from the trusted identity.
     #          Nothing in the request (headers, query, body) can change it.

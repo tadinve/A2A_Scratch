@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Day 01: a one-tool Google ADK agent that answers inventory questions from SQLite."
 requires-python = ">=3.11"
 dependencies = [
+    "argon2-cffi>=25.1.0",
     "fastapi>=0.141.1",
     "google-adk>=1.0",
     "httpx>=0.28.1",

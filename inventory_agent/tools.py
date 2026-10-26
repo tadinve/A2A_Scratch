@@ -76,6 +76,13 @@ def get_stock(sku: str) -> dict:
         - "forbidden": this agent is authenticated but not permitted to read inventory.
         - "error": inventory could not be reached; includes "message".
     """
+    return fetch_stock(sku)
+
+
+def fetch_stock(sku: str, *, forwarded_human: str | None = None) -> dict:
+    """get_stock for application code (not the model). Day 06.09 Experiment A:
+    optionally forwards an X-Human-User header. That header is an UNVERIFIED
+    assertion; the Inventory Service only logs it."""
     normalized_sku = sku.strip().upper()
 
     request, failure = _token_request()
@@ -88,7 +95,7 @@ def get_stock(sku: str) -> dict:
         return failure
 
     # Step 2: call the service.
-    response = _call_service(normalized_sku, token)
+    response = _call_service(normalized_sku, token, forwarded_human)
     if response is None:
         return dict(_UNAVAILABLE)
 
@@ -100,7 +107,7 @@ def get_stock(sku: str) -> dict:
         token, _, failure = _get_token(request, force_new=True)
         if failure:
             return failure
-        response = _call_service(normalized_sku, token)
+        response = _call_service(normalized_sku, token, forwarded_human)
         if response is None:
             return dict(_UNAVAILABLE)
 
@@ -211,7 +218,7 @@ def _clear_cache() -> None:
 # --------------------------------------------------------------------------- #
 # Service call
 # --------------------------------------------------------------------------- #
-def _call_service(normalized_sku: str, token: str) -> httpx.Response | None:
+def _call_service(normalized_sku: str, token: str, forwarded_human: str | None = None) -> httpx.Response | None:
     base_url = os.environ.get("INVENTORY_SERVICE_URL", DEFAULT_SERVICE_URL).rstrip("/")
     # quote(..., safe="") stops a SKU like "A/../B" from changing the URL path.
     url = f"{base_url}/stock/{quote(normalized_sku, safe='')}"
@@ -219,7 +226,7 @@ def _call_service(normalized_sku: str, token: str) -> httpx.Response | None:
     try:
         response = httpx.get(
             url,
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            headers=_service_headers(token, forwarded_human),
             timeout=TIMEOUT_SECONDS,
         )
     except httpx.RequestError:
@@ -227,6 +234,13 @@ def _call_service(normalized_sku: str, token: str) -> httpx.Response | None:
         return None
     logger.info("    service -> agent  HTTP %s", response.status_code)
     return response
+
+
+def _service_headers(token: str, forwarded_human: str | None) -> dict:
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    if forwarded_human is not None:
+        headers["X-Human-User"] = forwarded_human   # an assertion, NOT a credential
+    return headers
 
 
 def _map_service_response(response: httpx.Response, normalized_sku: str, key: tuple) -> dict:

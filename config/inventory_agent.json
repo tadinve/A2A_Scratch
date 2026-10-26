@@ -1,0 +1,7 @@
+{
+  "human_issuer": "a2a-human-identity-service",
+  "audience": "inventory-agent",
+  "trusted_human_keys": {
+    "identity-key-1": "~/secrets/keys/identity-key-1-public.pem"
+  }
+}
