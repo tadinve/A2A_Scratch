@@ -61,7 +61,7 @@ Restore the database afterwards (`mv data/inventory.db.bak data/inventory.db`).
 
 ## Example trace
 
-See [docs/day01-example.md](docs/day01-example.md) for a captured tool call, result, and final answer, plus the other four checks.
+See [local-implementation-docs/day01-example.md](local-implementation-docs/day01-example.md) for a captured tool call, result, and final answer, plus the other four checks.
 
 ## Day 02: credential check
 
@@ -93,8 +93,9 @@ or call the lookup directly, so it is not an enforcement boundary yet.
 
 ## Learnings
 
-- [Day 01: ADK inventory agent](docs/day01-learnings.md)
-- [Day 02: credential check inside the tool](docs/day02-learnings.md)
-- [Day 03: HTTP, headers, Postman, API-key auth](docs/day03-learnings.md)
-- [Day 04: authorization with roles and permissions](docs/day04-learnings.md)
-- [Day 05: JWTs, token issuer, scopes, token lifecycle, key rotation](docs/day05-learnings.md) · [rotation runbook](docs/day05-key-rotation-runbook.txt)
+- [Day 01: ADK inventory agent](local-implementation-docs/day01-learnings.md)
+- [Day 02: credential check inside the tool](local-implementation-docs/day02-learnings.md)
+- [Day 03: HTTP, headers, Postman, API-key auth](local-implementation-docs/day03-learnings.md)
+- [Day 04: authorization with roles and permissions](local-implementation-docs/day04-learnings.md)
+- [Day 05: JWTs, token issuer, scopes, token lifecycle, key rotation](local-implementation-docs/day05-learnings.md) · [rotation runbook](local-implementation-docs/day05-key-rotation-runbook.txt)
+- [Day 06: acting on behalf of a human (deck)](local-implementation-docs/day06-acting-for-humans.pptx) · [end-to-end JWT flow](<local-implementation-docs/End-to-End JWT Inventory Flow.png>)

@@ -72,7 +72,7 @@ These are the pipeline stages graphify runs (v0.9.95). Each one is a topic to le
 rebuild ourselves later:
 
 1. **Detect.** Walk the repo, sort files into code, docs, papers, images and video, and skip
-   anything sensitive or ignored. (This run skipped `docs/day05-signed-tokens.pptx` as sensitive.)
+   anything sensitive or ignored. (This run skipped `local-implementation-docs/day05-signed-tokens.pptx` as sensitive.)
 2. **Structural extraction.** Parse code with tree-sitter into an AST, then emit nodes
    (modules, classes, functions) and edges (`calls`, `imports_from`, `references`). This step
    is deterministic and needs no LLM.
