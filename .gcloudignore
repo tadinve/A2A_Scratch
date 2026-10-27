@@ -1,0 +1,10 @@
+# What `gcloud builds submit` uploads. Everything git ignores (.env, *.pem, keys, data)
+# stays local; the extra lines below just keep the upload small. .dockerignore then
+# decides what enters the image.
+#!include:.gitignore
+.git/
+.gcloudignore
+tests/
+graphify/
+graphify-out
+local-implementation-docs/

@@ -91,6 +91,17 @@ uv run python scripts/check_auth.py
 This is a teaching check inside one process. Any code in the process can read the secret
 or call the lookup directly, so it is not an enforcement boundary yet.
 
+## Days 07-08: Google sign-in, state in Firestore
+
+Alice signs in with Google at `http://localhost:8002/auth/google`; it is the only login.
+The Identity Service validates Google's ID token, maps the Google `sub` to `user-001`
+through an explicit link in Firestore, checks the user is enabled, and issues the same
+human JWT the agent already verifies.
+
+- Google client and flow: [day07-google-sign-in-setup.md](local-implementation-docs/day07-google-sign-in-setup.md)
+- Firestore users, links and pending logins: [day08-firestore-identity-setup.md](local-implementation-docs/day08-firestore-identity-setup.md)
+- Set up a GCP project once: `scripts/setup_google_project.sh PROJECT_ID`; deploy: `scripts/deploy_cloud_run.sh`
+
 ## Learnings
 
 - [Day 01: ADK inventory agent](local-implementation-docs/day01-learnings.md)
@@ -99,3 +110,5 @@ or call the lookup directly, so it is not an enforcement boundary yet.
 - [Day 04: authorization with roles and permissions](local-implementation-docs/day04-learnings.md)
 - [Day 05: JWTs, token issuer, scopes, token lifecycle, key rotation](local-implementation-docs/day05-learnings.md) · [rotation runbook](local-implementation-docs/day05-key-rotation-runbook.txt)
 - [Day 06: acting on behalf of a human (deck)](local-implementation-docs/day06-acting-for-humans.pptx) · [end-to-end JWT flow](<local-implementation-docs/End-to-End JWT Inventory Flow.png>)
+- [Day 07: Google sign-in with OIDC](local-implementation-docs/day07-learnings.md)
+- [Day 08: Firestore state, Identity Service on Cloud Run](local-implementation-docs/day08-learnings.md)

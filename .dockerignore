@@ -1,0 +1,29 @@
+# Never in an image: secrets, local state, tooling. Runtime secrets come from Secret Manager.
+.env
+**/.env
+*.pem
+**/*.pem
+secrets/
+keys/
+*.jwt
+data/
+.adk/
+
+# Not needed at runtime
+.git/
+.venv/
+**/__pycache__/
+.pytest_cache/
+tests/
+scripts/
+infra/
+graphify/
+graphify-out
+local-implementation-docs/
+*.md
+**/.env.example
+Dockerfile
+.dockerignore
+.gcloudignore
+.DS_Store
+Icon?
