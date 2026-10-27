@@ -3,6 +3,5 @@
   "audience": "inventory-agent",
   "token_lifetime_seconds": 300,
   "active_kid": "identity-key-1",
-  "private_key_path": "~/secrets/keys/identity-key-1-private.pem",
-  "users_db": "data/identity.db"
+  "private_key_path": "~/secrets/keys/identity-key-1-private.pem"
 }

@@ -1,4 +1,8 @@
-"""Load config/identity_service.json (override path with IDENTITY_SERVICE_CONFIG). Fail closed."""
+"""Load config/identity_service.json (override path with IDENTITY_SERVICE_CONFIG). Fail closed.
+
+IDENTITY_PRIVATE_KEY_PATH overrides the file's private_key_path. On Cloud Run the key is
+a Secret Manager secret mounted as a file there (Day 08); nothing else changes.
+"""
 
 import json
 import os
@@ -22,7 +26,6 @@ class IdentityConfig:
     token_lifetime_seconds: int
     active_kid: str
     private_key_path: Path
-    users_db: Path
 
 
 def load_config(path: Path = CONFIG_PATH) -> IdentityConfig:
@@ -36,8 +39,7 @@ def load_config(path: Path = CONFIG_PATH) -> IdentityConfig:
             audience=str(raw["audience"]),
             token_lifetime_seconds=int(raw["token_lifetime_seconds"]),
             active_kid=str(raw["active_kid"]),
-            private_key_path=resolve_path(raw["private_key_path"]),
-            users_db=resolve_path(raw["users_db"]),
+            private_key_path=resolve_path(os.getenv("IDENTITY_PRIVATE_KEY_PATH") or raw["private_key_path"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError(f"{path}: missing or invalid setting: {exc}") from None

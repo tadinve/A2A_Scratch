@@ -1,76 +1,67 @@
-"""User store: SQLite rows of (user_id, username, password_hash). No passwords.
+"""Internal user directory (Day 08): who exists and whether they may sign in. No passwords.
 
 The user_id ("user-001") is the stable identity that goes into tokens as `sub`.
-The username (an email) is only a login handle and can change later.
+How someone proves they ARE that user lives elsewhere (external_identities.py).
+
+    Firestore  identity_users/{user_id} = {"enabled": true, "display_name": "Alice", "updated_at": ...}
+
+Managed with scripts/identity_users.py. A missing user and a disabled one are
+treated the same: they cannot sign in.
 """
 
-import os
-import sqlite3
-from pathlib import Path
+import re
+import threading
 
-from identity_service.passwords import hash_password
+from identity_service.datastore import TIMEOUT_SECONDS, USERS, guarded
 
-MIN_PASSWORD_LENGTH = 12  # account policy, enforced when a user is created
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    user_id       TEXT PRIMARY KEY,
-    username      TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL CHECK (password_hash LIKE '$argon2id$%'),
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
-);
-"""
+USER_ID = re.compile(r"user-\d{3,}")
 
 
-def normalize_username(username: str) -> str:
-    return username.strip().lower()
+def check_user_id(user_id: str) -> str:
+    if not isinstance(user_id, str) or not USER_ID.fullmatch(user_id):
+        raise ValueError(f"malformed user id {user_id!r}; expected user-NNN")
+    return user_id
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.execute(SCHEMA)
-    os.chmod(db_path, 0o600)   # password verifiers: readable by the owner only
-    return conn
+class MemoryUserDirectory:
+    """For tests. Same behaviour as Firestore, nothing persists."""
+
+    def __init__(self, users: dict[str, bool] | None = None):
+        self._users = {check_user_id(u): bool(e) for u, e in (users or {}).items()}
+        self._lock = threading.Lock()
+
+    def is_enabled(self, user_id: str) -> bool:
+        with self._lock:
+            return self._users.get(user_id) is True
+
+    def put(self, user_id: str, *, enabled: bool, display_name: str = "") -> None:
+        with self._lock:
+            self._users[check_user_id(user_id)] = bool(enabled)
+
+    def list(self) -> list[dict]:
+        with self._lock:
+            return [{"user_id": u, "enabled": e} for u, e in sorted(self._users.items())]
 
 
-def create_user(db_path: Path, username: str, password: str) -> str:
-    """Store a new user with a hashed password. Returns the new user_id."""
-    name = normalize_username(username)
-    if not name:
-        raise ValueError("username is required")
-    if not isinstance(password, str) or len(password) < MIN_PASSWORD_LENGTH:
-        raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
-    password_hash = hash_password(password)   # the plaintext stops here
-    conn = _connect(db_path)
-    try:
-        if conn.execute("SELECT 1 FROM users WHERE username = ?", (name,)).fetchone():
-            raise ValueError(f"user {name!r} already exists")
-        count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        user_id = f"user-{count + 1:03d}"
-        conn.execute("INSERT INTO users (user_id, username, password_hash) VALUES (?, ?, ?)",
-                     (user_id, name, password_hash))
-        conn.commit()
-        return user_id
-    finally:
-        conn.close()
+class FirestoreUserDirectory:
+    def __init__(self, client, collection: str = USERS):
+        self._client, self._col = client, client.collection(collection)
 
+    def is_enabled(self, user_id: str) -> bool:
+        if not USER_ID.fullmatch(user_id or ""):
+            return False
+        with guarded("users.get"):
+            snap = self._col.document(user_id).get(timeout=TIMEOUT_SECONDS)
+        return snap.exists and (snap.to_dict() or {}).get("enabled") is True
 
-def find_user(db_path: Path, username: str) -> tuple[str, str, str] | None:
-    """Return (user_id, username, password_hash) or None."""
-    conn = _connect(db_path)
-    try:
-        row = conn.execute("SELECT user_id, username, password_hash FROM users WHERE username = ?",
-                           (normalize_username(username),)).fetchone()
-        return tuple(row) if row else None
-    finally:
-        conn.close()
+    def put(self, user_id: str, *, enabled: bool, display_name: str = "") -> None:
+        from google.cloud import firestore
+        fields = {"enabled": bool(enabled), "updated_at": firestore.SERVER_TIMESTAMP}
+        if display_name:
+            fields["display_name"] = display_name
+        with guarded("users.put"):
+            self._col.document(check_user_id(user_id)).set(fields, merge=True, timeout=TIMEOUT_SECONDS)
 
-
-def update_hash(db_path: Path, user_id: str, password_hash: str) -> None:
-    conn = _connect(db_path)
-    try:
-        conn.execute("UPDATE users SET password_hash = ? WHERE user_id = ?", (password_hash, user_id))
-        conn.commit()
-    finally:
-        conn.close()
+    def list(self) -> list[dict]:
+        with guarded("users.list"):
+            return [{"user_id": s.id, **(s.to_dict() or {})} for s in self._col.stream(timeout=TIMEOUT_SECONDS)]

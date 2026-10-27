@@ -72,14 +72,22 @@ IDENTITY_PRIVATE_PEM, IDENTITY_PUBLIC_PEM = _keypair()
 IDENTITY_PRIVATE_FILE = _key_dir / "identity-key-1-private.pem"
 IDENTITY_PRIVATE_FILE.write_bytes(IDENTITY_PRIVATE_PEM)
 IDENTITY_PRIVATE_FILE.chmod(0o600)
-IDENTITY_USERS_DB = _key_dir / "identity.db"
 IDENTITY_CONFIG_FILE = _key_dir / "identity_service.json"
 IDENTITY_CONFIG_FILE.write_text(json.dumps({
     "issuer": "a2a-human-identity-service", "audience": "inventory-agent", "token_lifetime_seconds": 300,
     "active_kid": "identity-key-1", "private_key_path": str(IDENTITY_PRIVATE_FILE),
-    "users_db": str(IDENTITY_USERS_DB),
 }))
 os.environ["IDENTITY_SERVICE_CONFIG"] = str(IDENTITY_CONFIG_FILE)
+# Day 08: Google sign-in is required at startup, and state lives in Firestore. Tests use
+# throwaway Google settings and the in-memory stores. Set here, BEFORE the app loads
+# identity_service/.env, so a developer's real .env values never reach a test.
+os.environ.update({
+    "GOOGLE_CLIENT_ID": "support-client.apps.googleusercontent.com",
+    "GOOGLE_CLIENT_SECRET": "support-google-client-secret",
+    "GOOGLE_REDIRECT_URI": "http://localhost:8002/auth/google/callback",
+    "GOOGLE_OIDC_DISCOVERY_URL": "https://accounts.google.com/.well-known/openid-configuration",
+    "IDENTITY_STORE": "memory",
+})
 
 # Day 06.07: the Inventory Agent trusts the identity PUBLIC key for human tokens.
 IDENTITY_PUBLIC_FILE = _key_dir / "identity-key-1-public.pem"
